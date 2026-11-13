@@ -169,7 +169,7 @@ class LocalDatabase {
 
   async getPendingReports(): Promise<Report[]> {
     const all = await this.getAllReports();
-    return all.filter((r) => r.syncStatus === 'Pending' || r.syncStatus === 'Failed');
+    return all.filter((r) => r.status !== 'Draft' && (r.syncStatus === 'Pending' || r.syncStatus === 'Failed'));
   }
 
   // =================== Announcements Operations ===================
