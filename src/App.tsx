@@ -19,6 +19,7 @@ import { Announcement, Report, SubCity, UserRole } from './types';
 import { localDB } from './services/db';
 import { announcementService } from './services/announcementService';
 import { syncService } from './services/syncService';
+import { apiRequest, setApiRole } from './services/apiClient';
 
 export default function App() {
   const [isInitialized, setIsInitialized] = useState(false);
@@ -44,16 +45,33 @@ export default function App() {
   // Load data from IndexedDB
   const loadData = useCallback(async () => {
     try {
-      const [allReports, allAnnouncements] = await Promise.all([
+      const [localReports, allAnnouncements] = await Promise.all([
         localDB.getAllReports(),
         announcementService.getAllAnnouncements(),
       ]);
-      setReports(allReports);
+      let visibleReports = localReports;
+      if (currentRole === 'coordinator' && navigator.onLine) {
+        try {
+          const response = await apiRequest<{ success: boolean; data: Report[] }>('/reports');
+          const remoteReports = response.data || [];
+          await Promise.all(remoteReports.map(async (remote) => {
+            const local = await localDB.getReportById(remote.id);
+            await localDB.saveReport({ ...remote, syncStatus: 'Synchronized', syncAttempts: local?.syncAttempts || 0, lastSyncAttemptAt: local?.lastSyncAttemptAt, syncErrorMessage: undefined });
+          }));
+          const merged = new Map<string, Report>();
+          localReports.forEach((report) => merged.set(report.id, report));
+          remoteReports.forEach((report) => merged.set(report.id, { ...report, syncStatus: 'Synchronized', syncAttempts: 0 }));
+          visibleReports = [...merged.values()].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        } catch (apiError) {
+          console.warn('[App] Could not refresh reports from server; showing local reports.', apiError);
+        }
+      }
+      setReports(visibleReports);
       setAnnouncements(allAnnouncements);
     } catch (err) {
       console.error('[App] Failed to load data from IndexedDB:', err);
     }
-  }, []);
+  }, [currentRole]);
 
   // Initialize DB and event listeners on mount
   useEffect(() => {
@@ -149,6 +167,7 @@ export default function App() {
       <Header
         currentRole={currentRole}
         onRoleChange={(newRole) => {
+          setApiRole(newRole);
           setCurrentRole(newRole);
           if (newRole === 'coordinator') {
             setActiveTab('coordinator');
