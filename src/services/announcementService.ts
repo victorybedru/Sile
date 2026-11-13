@@ -1,11 +1,7 @@
-/**
- * Announcement Service for Sile
- * Handles retrieval, location/category filtering, and coordinator publishing.
- */
-
+/** Announcement retrieval and coordinator publishing with an IndexedDB cache. */
 import { Announcement, ServiceCategory, SubCity } from '../types';
 import { localDB } from './db';
-import { mockApi } from './mockApi';
+import { apiRequest, getApiRole } from './apiClient';
 
 export interface CreateAnnouncementInput {
   title: string;
@@ -19,90 +15,79 @@ export interface CreateAnnouncementInput {
   isPublished?: boolean;
 }
 
+interface ApiList<T> { success: boolean; data: T[] }
+interface ApiItem<T> { success: boolean; data: T }
+
 export class AnnouncementService {
-  /**
-   * Fetches all published announcements
-   */
   async getPublishedAnnouncements(filters?: {
     subCity?: SubCity | 'All Areas' | null;
     category?: ServiceCategory | 'All' | null;
   }): Promise<Announcement[]> {
-    const all = await localDB.getAllAnnouncements();
+    const all = await this.getAllAnnouncements();
     return all.filter((item) => {
       if (!item.isPublished) return false;
-
-      // SubCity filter: Include item if it matches the requested sub-city OR is applicable to 'All Areas'
-      if (filters?.subCity && filters.subCity !== 'All Areas') {
-        const matchesArea =
-          item.subCity === filters.subCity || item.subCity === 'All Areas';
-        if (!matchesArea) return false;
-      }
-
-      // Category filter
-      if (filters?.category && filters.category !== 'All') {
-        if (item.category !== filters.category) return false;
-      }
-
+      if (filters?.subCity && filters.subCity !== 'All Areas' && item.subCity !== filters.subCity && item.subCity !== 'All Areas') return false;
+      if (filters?.category && filters.category !== 'All' && item.category !== filters.category) return false;
       return true;
     });
   }
 
-  /**
-   * Fetches all announcements (for coordinator management)
-   */
   async getAllAnnouncements(): Promise<Announcement[]> {
-    return localDB.getAllAnnouncements();
-  }
-
-  /**
-   * Coordinator creation of new service announcements
-   */
-  async createAnnouncement(input: CreateAnnouncementInput): Promise<Announcement> {
-    if (!input.title || input.title.trim().length < 5) {
-      throw new Error('Announcement title must be at least 5 characters long.');
-    }
-    if (!input.description || input.description.trim().length < 10) {
-      throw new Error('Announcement description must provide clear details (at least 10 characters).');
-    }
-
-    const now = new Date().toISOString();
-    const id = `ann-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
-
-    const announcement: Announcement = {
-      id,
-      title: input.title.trim(),
-      category: input.category,
-      subCity: input.subCity,
-      affectedNeighborhoods: input.affectedNeighborhoods?.trim() || undefined,
-      description: input.description.trim(),
-      isPlanned: input.isPlanned,
-      startDate: input.startDate || undefined,
-      expectedEndDate: input.expectedEndDate || undefined,
-      publishedAt: now,
-      isPublished: input.isPublished ?? true,
-      isSampleData: true, // Clearly marked as prototype demo data
-      publisherName: 'Addis Ababa District Coordination Desk',
-    };
-
-    // Save to local IndexedDB
-    await localDB.saveAnnouncement(announcement);
-
-    // Also push to mock API
+    const cachedAll = await localDB.getAllAnnouncements();
+    const cached = getApiRole() === 'coordinator' ? cachedAll : cachedAll.filter((item) => item.isPublished);
     try {
-      await mockApi.publishAnnouncement(announcement);
-    } catch (e) {
-      console.warn('[AnnouncementService] Could not publish to remote mock API immediately:', e);
+      const path = getApiRole() === 'coordinator' ? '/coordinator/announcements' : '/announcements';
+      const response = await apiRequest<ApiList<Announcement>>(path);
+      const remote = response.data || [];
+      await Promise.all(remote.map((announcement) => localDB.saveAnnouncement(announcement)));
+      const merged = new Map<string, Announcement>();
+      cached.forEach((item) => merged.set(item.id, item));
+      remote.forEach((item) => merged.set(item.id, item));
+      return [...merged.values()].sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
+    } catch (error) {
+      // Previously cached and sample announcements remain available offline.
+      console.warn('[AnnouncementService] Using cached announcements:', error);
+      return cached;
     }
-
-    return announcement;
   }
 
-  /**
-   * Updates an existing announcement
-   */
+  async createAnnouncement(input: CreateAnnouncementInput): Promise<Announcement> {
+    if (!input.title || input.title.trim().length < 5) throw new Error('Announcement title must be at least 5 characters long.');
+    if (!input.description || input.description.trim().length < 10) throw new Error('Announcement description must provide clear details (at least 10 characters).');
+    const response = await apiRequest<ApiItem<Announcement>>('/coordinator/announcements', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+    await localDB.saveAnnouncement(response.data);
+    return response.data;
+  }
+
   async updateAnnouncement(announcement: Announcement): Promise<Announcement> {
-    await localDB.saveAnnouncement(announcement);
-    return announcement;
+    const response = await apiRequest<ApiItem<Announcement>>(`/coordinator/announcements/${encodeURIComponent(announcement.id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        title: announcement.title,
+        category: announcement.category,
+        subCity: announcement.subCity,
+        affectedNeighborhoods: announcement.affectedNeighborhoods,
+        description: announcement.description,
+        isPlanned: announcement.isPlanned,
+        startDate: announcement.startDate,
+        expectedEndDate: announcement.expectedEndDate,
+        isPublished: announcement.isPublished,
+      }),
+    });
+    await localDB.saveAnnouncement(response.data);
+    return response.data;
+  }
+
+  async setPublished(id: string, isPublished: boolean): Promise<Announcement> {
+    const response = await apiRequest<ApiItem<Announcement>>(`/coordinator/announcements/${encodeURIComponent(id)}/publish`, {
+      method: 'PATCH',
+      body: JSON.stringify({ isPublished }),
+    });
+    await localDB.saveAnnouncement(response.data);
+    return response.data;
   }
 }
 
