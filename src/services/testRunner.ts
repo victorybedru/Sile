@@ -66,7 +66,7 @@ export class TestRunner {
       {
         id: 'test-5',
         name: '5. Valid & Invalid Status Transitions',
-        description: 'Verify state machine allows Draft → Submitted → Assigned → In Progress → Resolved, but blocks Draft → Resolved.',
+        description: 'Verify the local state machine allows the valid workflow and blocks Draft → Resolved without requiring a live server.',
         status: 'pending',
         durationMs: 0,
         message: 'Awaiting execution',
@@ -74,7 +74,7 @@ export class TestRunner {
       {
         id: 'test-6',
         name: '6. Synchronization State Progression',
-        description: 'Verify sync service transitions a Pending report to Synchronized upon successful server receipt.',
+        description: 'Verify the sync queue transitions Pending → Synchronized using an isolated mock server transport.',
         status: 'pending',
         durationMs: 0,
         message: 'Awaiting execution',
@@ -234,18 +234,18 @@ export class TestRunner {
         throw new Error('State machine allowed illegal transition from Draft directly to Resolved!');
       }
 
-      // Valid workflow: Draft -> Submitted -> Assigned -> In Progress -> Resolved
-      const submitted = await reportService.updateReportStatus(draft.id, 'Submitted', 'Resident finalized draft');
-      if (submitted.status !== 'Submitted') throw new Error('Failed transition to Submitted');
-
-      const assigned = await reportService.assignReport(draft.id, 'Yeka District Roads Crew', 'Scheduled for dispatch');
-      if (assigned.status !== 'Assigned') throw new Error('Failed transition to Assigned');
-
-      const inProgress = await reportService.updateReportStatus(draft.id, 'In Progress', 'Crew arrived on site');
-      if (inProgress.status !== 'In Progress') throw new Error('Failed transition to In Progress');
-
-      const resolved = await reportService.updateReportStatus(draft.id, 'Resolved', 'Traffic signals restored');
-      if (resolved.status !== 'Resolved') throw new Error('Failed transition to Resolved');
+      // Verify the pure state machine independently of the live backend.
+      // Server-side transition persistence is covered by the API workflow checks.
+      const workflow: ReportStatus[] = ['Submitted', 'Assigned', 'In Progress', 'Resolved'];
+      let current: ReportStatus = draft.status;
+      for (const target of workflow) {
+        const transition = canTransitionStatus(current, target);
+        if (!transition.allowed) {
+          throw new Error(`Expected transition ${current} → ${target} to be allowed.`);
+        }
+        current = target;
+      }
+      if (current !== 'Resolved') throw new Error('Valid workflow did not reach Resolved.');
 
       return {
         message: `Workflow verified: Draft → Submitted → Assigned → In Progress → Resolved succeeded. Illegal Draft → Resolved transition properly blocked.`,
@@ -255,7 +255,18 @@ export class TestRunner {
     // Test 6: Synchronization State Progression
     let syncTestReportId = '';
     await this.executeTest(results, 5, async () => {
-      // Ensure online mode
+      // Use the isolated mock transport for deterministic browser reliability tests.
+      // The normal application transport remains the real Express API.
+      syncService.setTransportForTests(async (report) => {
+        const result = await mockApi.submitReport(report);
+        if (!result.success || !result.data) throw new Error(result.error || 'Mock sync failed');
+        return {
+          success: true,
+          data: result.data,
+          isDuplicateAck: result.isDuplicateAck,
+          serverTimestamp: result.serverTimestamp,
+        };
+      });
       syncService.setSimulatedOffline(false);
       mockApi.setSimulateFailure(false);
 
@@ -356,11 +367,14 @@ export class TestRunner {
         throw new Error(`Expected retry to succeed, got: ${retried.syncStatus}`);
       }
 
+      syncService.setTransportForTests();
       return {
-        message: `Report was safely retained in IndexedDB during network failure (marked Failed with reason), and succeeded upon retry. Zero data loss.`,
+        message: `Report was safely retained in IndexedDB during simulated network failure (marked Failed with reason), and succeeded upon retry. Zero data loss.`,
       };
     }, onProgress);
 
+    // Restore the real backend transport after the isolated test suite.
+    syncService.setTransportForTests();
     return results;
   }
 
