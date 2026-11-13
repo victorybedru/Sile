@@ -208,6 +208,19 @@ export interface UpdateAnnouncementInput extends Partial<CreateAnnouncementInput
   isPublished?: boolean;
 }
 
+export interface ReportFilters {
+  subCity?: SubCity;
+  category?: ServiceCategory;
+  status?: ReportStatus;
+  priority?: Priority;
+}
+
+export interface AnnouncementFilters {
+  subCity?: SubCity | 'All Areas';
+  category?: 'Electricity' | 'Water' | 'Roads';
+  isPublished?: boolean;
+}
+
 // ==============================================================================
 // 5. STATUS TRANSITION STATE MACHINE (Authoritative State Machine)
 // ==============================================================================
