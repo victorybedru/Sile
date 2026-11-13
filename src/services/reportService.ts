@@ -5,6 +5,7 @@
 
 import { ActivityLog, Priority, Report, ReportStatus, ServiceCategory, SubCity, canTransitionStatus } from '../types';
 import { localDB } from './db';
+import { apiRequest } from './apiClient';
 
 export interface CreateReportInput {
   category: ServiceCategory;
@@ -124,36 +125,24 @@ export class ReportService {
     reportId: string,
     targetStatus: ReportStatus,
     note?: string,
-    actor: 'Resident' | 'Coordinator' | 'System' = 'Coordinator'
+    _actor: 'Resident' | 'Coordinator' | 'System' = 'Coordinator'
   ): Promise<Report> {
     const report = await localDB.getReportById(reportId);
-    if (!report) {
-      throw new Error(`Report not found: ${reportId}`);
-    }
-
+    if (!report) throw new Error(`Report not found: ${reportId}`);
     const check = canTransitionStatus(report.status, targetStatus);
-    if (!check.allowed) {
-      throw new Error(check.reason || 'Invalid status transition.');
-    }
+    if (!check.allowed) throw new Error(check.reason || 'Invalid status transition.');
 
-    const now = new Date().toISOString();
-    const historyItem: ActivityLog = {
-      id: `act-${Date.now()}`,
-      reportId: report.id,
-      timestamp: now,
-      action: `Status Changed to ${targetStatus}`,
-      details: note || `Status progressed from ${report.status} to ${targetStatus}.`,
-      actor,
-    };
-
+    const response = await apiRequest<{ success: boolean; data: Report }>(`/reports/${encodeURIComponent(reportId)}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: targetStatus, note }),
+    });
     const updated: Report = {
-      ...report,
-      status: targetStatus,
-      updatedAt: now,
-      coordinatorNotes: note ? (report.coordinatorNotes ? `${report.coordinatorNotes}\n${note}` : note) : report.coordinatorNotes,
-      history: [...report.history, historyItem],
+      ...response.data,
+      syncStatus: report.syncStatus,
+      syncAttempts: report.syncAttempts,
+      lastSyncAttemptAt: report.lastSyncAttemptAt,
+      syncErrorMessage: report.syncErrorMessage,
     };
-
     await localDB.saveReport(updated);
     return updated;
   }
@@ -163,30 +152,20 @@ export class ReportService {
    */
   async assignReport(reportId: string, assignedTo: string, note?: string): Promise<Report> {
     const report = await localDB.getReportById(reportId);
-    if (!report) {
-      throw new Error(`Report not found: ${reportId}`);
-    }
+    if (!report) throw new Error(`Report not found: ${reportId}`);
+    if (!assignedTo.trim()) throw new Error('Please provide a dispatch team or agency.');
 
-    const now = new Date().toISOString();
-    const newStatus: ReportStatus = report.status === 'Submitted' ? 'Assigned' : report.status;
-
-    const historyItem: ActivityLog = {
-      id: `act-${Date.now()}`,
-      reportId: report.id,
-      timestamp: now,
-      action: 'Report Assigned',
-      details: `Assigned to ${assignedTo}. ${note || ''}`.trim(),
-      actor: 'Coordinator',
-    };
-
+    const response = await apiRequest<{ success: boolean; data: Report }>(`/reports/${encodeURIComponent(reportId)}/assign`, {
+      method: 'PATCH',
+      body: JSON.stringify({ assignedTo: assignedTo.trim(), note }),
+    });
     const updated: Report = {
-      ...report,
-      assignedTo,
-      status: newStatus,
-      updatedAt: now,
-      history: [...report.history, historyItem],
+      ...response.data,
+      syncStatus: report.syncStatus,
+      syncAttempts: report.syncAttempts,
+      lastSyncAttemptAt: report.lastSyncAttemptAt,
+      syncErrorMessage: report.syncErrorMessage,
     };
-
     await localDB.saveReport(updated);
     return updated;
   }
