@@ -49,7 +49,7 @@ class MockApiService {
    * Idempotent report submission endpoint
    * POST /api/v1/reports
    */
-  async submitReport(report: Report): Promise<ApiResponse<{ id: string; status: string }>> {
+  async submitReport(report: Report): Promise<ApiResponse<Report>> {
     await this.delay();
 
     if (this.simulateFailure) {
@@ -71,10 +71,7 @@ class MockApiService {
 
     return {
       success: true,
-      data: {
-        id: report.id,
-        status: report.status,
-      },
+      data: serverRecord,
       serverTimestamp,
       isDuplicateAck: alreadyExists,
     };

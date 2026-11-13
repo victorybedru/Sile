@@ -6,14 +6,21 @@
 
 import { Report, SyncStatus } from '../types';
 import { localDB } from './db';
-import { mockApi } from './mockApi';
+import { apiRequest } from './apiClient';
 
 type SyncListener = () => void;
+type SyncTransport = (report: Report) => Promise<{
+  success: boolean;
+  data: Report;
+  isDuplicateAck?: boolean;
+  serverTimestamp: string;
+}>;
 
 class SyncService {
   private isSimulatedOffline = false;
   private isSyncing = false;
   private listeners: Set<SyncListener> = new Set();
+  private transport: SyncTransport = (report) => this.sendToServer(report);
 
   constructor() {
     if (typeof window !== 'undefined') {
@@ -72,6 +79,21 @@ class SyncService {
   }
 
   /**
+   * Allows the in-app reliability suite to use an isolated mock transport.
+   * Production behavior always defaults to the real Express API.
+   */
+  setTransportForTests(transport?: SyncTransport): void {
+    this.transport = transport || ((report) => this.sendToServer(report));
+  }
+
+  private async sendToServer(report: Report) {
+    return apiRequest<{ success: boolean; data: Report; isDuplicateAck?: boolean; serverTimestamp: string }>('/reports', {
+      method: 'POST',
+      body: JSON.stringify(report),
+    });
+  }
+
+  /**
    * Synchronizes a single report by ID idempotently
    */
   async syncReport(reportId: string): Promise<Report> {
@@ -124,9 +146,9 @@ class SyncService {
     };
 
     try {
-      const response = await mockApi.submitReport(report);
+      const response = await this.transport(report);
 
-      if (response.success) {
+      if (response.success && response.data) {
         const successLog = {
           id: `act-${Date.now()}-sync-ok`,
           reportId: report.id,
@@ -139,7 +161,7 @@ class SyncService {
         };
 
         const synchronizedReport: Report = {
-          ...report,
+          ...response.data,
           syncStatus: 'Synchronized',
           syncAttempts: attempts,
           lastSyncAttemptAt: response.serverTimestamp,
@@ -151,7 +173,7 @@ class SyncService {
         this.notifyListeners();
         return synchronizedReport;
       } else {
-        throw new Error(response.error || 'Server rejected synchronization');
+        throw new Error('Server rejected synchronization');
       }
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : 'Unknown network failure';
