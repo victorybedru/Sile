@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+
+# Compiled output
+dist/
+
+# Local Environment Variables and Secrets
+.env
+.env.local
+.env.*.local
+*.env
+
+# Keep template
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
